@@ -23,6 +23,7 @@
   <summary>目录</summary>
   <ol>
     <li><a href="#about-the-project">项目简介</a></li>
+    <li><a href="#screenshots">界面预览</a></li>
     <li><a href="#getting-started">安装</a></li>
     <li><a href="#usage">使用方法</a></li>
     <li><a href="#building">本地构建</a></li>
@@ -48,6 +49,14 @@
 ### 技术栈
 
 [Kotlin](https://kotlinlang.org/)、[Jetpack Compose](https://developer.android.com/compose) 和 [Miuix](https://github.com/compose-miuix-ui/miuix)。音频解码与导出使用 Android 系统媒体接口。
+
+<a id="screenshots"></a>
+
+## 界面预览
+
+| 设置 | 处理 | 我的 |
+| :---: | :---: | :---: |
+| <img src="images/settings.png" alt="设置页：选择耳机和预设音效" width="240"> | <img src="images/processing.png" alt="处理页：波形裁切和增益调节" width="240"> | <img src="images/my.png" alt="我的页：音效库管理和版本检查" width="240"> |
 
 <a id="getting-started"></a>
 

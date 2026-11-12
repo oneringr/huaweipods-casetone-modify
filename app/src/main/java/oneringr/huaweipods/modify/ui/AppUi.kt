@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -40,6 +41,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.input.pointer.pointerInput
@@ -75,6 +77,8 @@ private val LocalPalette = staticCompositionLocalOf { Palette(Color(0xfff9f9f9),
 @Composable
 fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () -> Unit, exportSound: (Sound) -> Unit, exportReady: (java.io.File, String) -> Unit) {
     val context = LocalContext.current
+    val deviceSelected = s.device != null
+    val canSelectSound = deviceSelected && !s.busy
     val dark = when(s.theme) { "浅色" -> false; "深色" -> true; else -> isSystemInDarkTheme() }
     val p = if (dark) Palette(Color(0xff111111), Color(0xff191919), Color(0xffeeeeee), Color(0xffb4b4b4), Color(0xff333333), Color(0xff3b9eff), Color(0xff0d2847)) else LocalPalette.current
     val controller = remember(dark) {
@@ -142,41 +146,45 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
                                     Surface {
                                         Row(Modifier.fillMaxWidth().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
                                             RoundIcon(Icons.Headphones)
-                                            Column(Modifier.weight(1f).padding(horizontal = 14.dp).clickable(enabled = !s.busy) { requestBluetooth(); devices = true }) {
-                                                Label(s.device?.name ?: "选择耳机", maxLines = 2)
-                                                Caption(if (s.connected) "设备已就绪" else "从已配对设备中选择")
+                                            if (!deviceSelected) {
+                                                PrimaryButton("选择耳机", Modifier.weight(1f).padding(start = 14.dp).dropShadow(RoundedCornerShape(16.dp), Shadow(radius = 16.dp, color = p.accent, alpha = .28f)), !s.busy) { requestBluetooth(); devices = true }
+                                            } else {
+                                                Column(Modifier.weight(1f).padding(horizontal = 14.dp).clickable(enabled = !s.busy) { requestBluetooth(); devices = true }) {
+                                                    Label(s.device.name, maxLines = 2)
+                                                    Caption(if (s.connected) "设备已就绪" else "从已配对设备中选择")
+                                                }
+                                                SmallAction("检测", enabled = !s.busy, onClick = model::connect)
                                             }
-                                            SmallAction("检测", enabled = !s.busy, onClick = { if (s.device == null) { requestBluetooth(); devices = true } else model.connect() })
                                         }
                                     }
                                 }
                                 item { SectionTitle("默认音效") }
-                                item { Surface { SoundRow("默认", "舒展", selected = s.activeKey == "default", enabled = !s.busy, onApply = { model.apply("default") }) } }
+                                item { SoundGroup(deviceSelected) { SoundRow("默认", "舒展", selected = s.activeKey == "default", enabled = canSelectSound, onApply = { model.apply("default") }) } }
                                 item { SectionTitle("预设音效") }
                                 item {
-                                    Surface {
+                                    SoundGroup(deviceSelected) {
                                         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Label("增益", Modifier.weight(1f))
-                                                Text("${(s.presetGain * 100).roundToLong()}%", color = p.accent, fontSize = 13.sp, modifier = Modifier.widthIn(min = 42.dp))
+                                                Text("${(s.presetGain * 100).roundToLong()}%", color = LocalPalette.current.accent, fontSize = 13.sp, modifier = Modifier.widthIn(min = 42.dp))
                                             }
-                                            GainSlider(s.presetGain, !s.busy, "预设音效增益", model::presetGain)
+                                            GainSlider(s.presetGain, canSelectSound, "预设音效增益", model::presetGain)
                                         }
                                         Divider()
                                         presets.forEachIndexed { i, preset ->
                                         val key = "preset:${preset.id}"
-                                        SoundRow(preset.name, selected = s.activeKey == key, playing = s.playing == key, enabled = !s.busy, onPreview = { model.preview(key) }, onApply = { model.apply(key) })
+                                        SoundRow(preset.name, selected = s.activeKey == key, playing = s.playing == key, enabled = canSelectSound, onPreview = { model.preview(key) }, onApply = { model.apply(key) })
                                         if (i < presets.lastIndex) Divider()
                                     } }
                                 }
                                 item { Row(verticalAlignment = Alignment.CenterVertically) { SectionTitle("我的音效库", Modifier.weight(1f)); if (s.library.isNotEmpty()) SmallAction("管理", onClick = { model.page(2) }) } }
                                 item {
-                                    Surface {
+                                    SoundGroup(deviceSelected) {
                                         if (s.library.isEmpty()) Row(Modifier.padding(20.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Caption("还没有添加音效", Modifier.weight(1f)); SmallAction("添加", enabled = !s.busy, onClick = import)
                                         } else model.sortedSounds(s).forEachIndexed { i, sound ->
                                             val key = "library:${sound.id}"
-                                            SoundRow(sound.name, formatTime(sound.durationMs), selected = s.activeKey == key, playing = s.playing == key, enabled = !s.busy, onPreview = { model.preview(key) }, onApply = { model.apply(key) })
+                                            SoundRow(sound.name, formatTime(sound.durationMs), selected = s.activeKey == key, playing = s.playing == key, enabled = canSelectSound, onPreview = { model.preview(key) }, onApply = { model.apply(key) })
                                             if (i < s.library.lastIndex) Divider()
                                         }
                                     }
@@ -393,6 +401,13 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
 
 @Composable private fun Surface(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(LocalPalette.current.surface), content = content)
+}
+@Composable private fun SoundGroup(deviceSelected: Boolean, content: @Composable ColumnScope.() -> Unit) {
+    val p = LocalPalette.current
+    val muted = p.muted.copy(alpha = .65f)
+    CompositionLocalProvider(LocalPalette provides if (deviceSelected) p else p.copy(ink = muted, accent = muted, muted = muted)) {
+        Surface(content = content)
+    }
 }
 @Composable private fun Label(text: String, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) = Text(text, modifier, color = LocalPalette.current.ink, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 @Composable private fun Caption(text: String, modifier: Modifier = Modifier) = Text(text, modifier, color = LocalPalette.current.muted, fontSize = 13.sp)
