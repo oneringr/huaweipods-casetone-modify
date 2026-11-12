@@ -8,15 +8,16 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -34,20 +35,40 @@ class AudioEngine(private val context: Context) {
         val name = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         } ?: "导入音频"
-        val input = File(work, "${UUID.randomUUID()}.source")
+        var staged: File? = null
         try {
-            context.contentResolver.openInputStream(uri)?.use { source -> input.outputStream().use(source::copyTo) }
-                ?: error("无法读取所选文件，请重新选择")
-            return decode(input, name, progress)
-        } finally { input.delete() }
+            return decode(name, progress) { extractor ->
+                try { extractor.setDataSource(context, uri, null) }
+                catch (_: IOException) {
+                    // 部分提供方只提供顺序流。仅在不能直接读取时暂存原文件。
+                    val input = File(work, "${UUID.randomUUID()}.source")
+                    staged = input
+                    context.contentResolver.openInputStream(uri)?.use { source ->
+                        input.outputStream().use { output ->
+                            val buffer = ByteArray(65536)
+                            while (true) {
+                                checkCancelled()
+                                val count = source.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    } ?: error("无法读取所选文件，请重新选择")
+                    extractor.setDataSource(input.absolutePath)
+                }
+            }
+        } finally { staged?.delete() }
     }
 
-    fun decode(input: File, name: String, progress: (Float) -> Unit = {}): AudioSource {
+    fun decode(input: File, name: String, progress: (Float) -> Unit = {}): AudioSource =
+        decode(name, progress) { it.setDataSource(input.absolutePath) }
+
+    private fun decode(name: String, progress: (Float) -> Unit, setDataSource: (MediaExtractor) -> Unit): AudioSource {
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
         val output = File(work, "${UUID.randomUUID()}.pcm")
         try {
-            extractor.setDataSource(input.absolutePath)
+            setDataSource(extractor)
             val track = (0 until extractor.trackCount).firstOrNull { extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
                 ?: error("此文件没有音轨")
             extractor.selectTrack(track)
@@ -63,7 +84,8 @@ class AudioEngine(private val context: Context) {
             val info = MediaCodec.BufferInfo()
             var inputEnded = false
             var outputEnded = false
-            var lastOutput = System.currentTimeMillis()
+            var lastOutput = SystemClock.elapsedRealtime()
+            var decoded = ByteArray(65536)
             FileOutputStream(output).use { stream ->
                 while (!outputEnded) {
                     checkCancelled()
@@ -95,20 +117,24 @@ class AudioEngine(private val context: Context) {
                             buffer.position(info.offset); buffer.limit(info.offset + info.size)
                             buffer.order(ByteOrder.LITTLE_ENDIAN)
                             if (info.size > 0) {
-                                val data = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
-                                    val bytes = ByteBuffer.allocate(info.size / 2).order(ByteOrder.LITTLE_ENDIAN)
-                                    while (buffer.remaining() >= 4) bytes.putShort((buffer.float.coerceIn(-1f, 1f) * 32767f).roundToInt().toShort())
-                                    bytes.array()
-                                } else ByteArray(info.size).also(buffer::get)
-                                stream.write(data)
+                                val size = if (encoding == AudioFormat.ENCODING_PCM_FLOAT) info.size / 4 * 2 else info.size
+                                if (decoded.size < size) decoded = ByteArray(size)
+                                if (encoding == AudioFormat.ENCODING_PCM_FLOAT) {
+                                    var at = 0
+                                    while (buffer.remaining() >= 4) {
+                                        val sample = (buffer.float.coerceIn(-1f, 1f) * 32767f).roundToInt()
+                                        decoded[at++] = sample.toByte(); decoded[at++] = (sample shr 8).toByte()
+                                    }
+                                } else buffer.get(decoded, 0, size)
+                                stream.write(decoded, 0, size)
                                 if (duration > 0) progress((info.presentationTimeUs.toFloat() / duration).coerceIn(0f, 0.98f))
                             }
                             outputEnded = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                             codec.releaseOutputBuffer(index, false)
-                            lastOutput = System.currentTimeMillis()
+                            lastOutput = SystemClock.elapsedRealtime()
                         }
                     }
-                    require(System.currentTimeMillis() - lastOutput < 30000) { "音频解码超时，请尝试其他文件" }
+                    require(SystemClock.elapsedRealtime() - lastOutput < 30000) { "音频解码超时，请尝试其他文件" }
                 }
             }
             require(rate > 0 && channels in 1..8 && output.length() > 0) { "未读取到有效音频" }
@@ -244,10 +270,10 @@ class AudioEngine(private val context: Context) {
                 progress(done.toFloat() / total)
             })
             var eosQueued = false
-            val deadline = System.currentTimeMillis() + 30000
+            val deadline = SystemClock.elapsedRealtime() + 30000
             while (!ended) {
                 checkCancelled()
-                require(System.currentTimeMillis() < deadline) { "音频编码超时" }
+                require(SystemClock.elapsedRealtime() < deadline) { "音频编码超时" }
                 if (!eosQueued) {
                     val index = encoder.dequeueInputBuffer(10000)
                     if (index >= 0) { encoder.queueInputBuffer(index, 0, 0, framesFed * 1000000L / source.rate, MediaCodec.BUFFER_FLAG_END_OF_STREAM); eosQueued = true }
@@ -274,7 +300,7 @@ class AudioEngine(private val context: Context) {
                 checkCancelled()
                 val count = min(buffer.size.toLong(), total - done).toInt()
                 input.readFully(buffer, 0, count)
-                for (i in 0 until count step 2) {
+                if (gain != 1f) for (i in 0 until count step 2) {
                     val value = (shortAt(buffer, i) * gain).roundToInt().coerceIn(-32768, 32767)
                     buffer[i] = value.toByte(); buffer[i + 1] = (value shr 8).toByte()
                 }

@@ -79,6 +79,7 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
     val context = LocalContext.current
     val deviceSelected = s.device != null
     val canSelectSound = deviceSelected && !s.busy
+    val sounds = remember(s.library, s.sort) { model.sortedSounds(s) }
     val dark = when(s.theme) { "浅色" -> false; "深色" -> true; else -> isSystemInDarkTheme() }
     val p = if (dark) Palette(Color(0xff111111), Color(0xff191919), Color(0xffeeeeee), Color(0xffb4b4b4), Color(0xff333333), Color(0xff3b9eff), Color(0xff0d2847)) else LocalPalette.current
     val controller = remember(dark) {
@@ -182,7 +183,7 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
                                     SoundGroup(deviceSelected) {
                                         if (s.library.isEmpty()) Row(Modifier.padding(20.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Caption("还没有添加音效", Modifier.weight(1f)); SmallAction("添加", enabled = !s.busy, onClick = import)
-                                        } else model.sortedSounds(s).forEachIndexed { i, sound ->
+                                        } else sounds.forEachIndexed { i, sound ->
                                             val key = "library:${sound.id}"
                                             SoundRow(sound.name, formatTime(sound.durationMs), selected = s.activeKey == key, playing = s.playing == key, enabled = canSelectSound, onPreview = { model.preview(key) }, onApply = { model.apply(key) })
                                             if (i < s.library.lastIndex) Divider()
@@ -197,7 +198,7 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
                                 if (s.library.isEmpty()) item { Surface { Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                                     RoundIcon(Icons.Music); Label("添加你的第一段音效"); PrimaryButton("导入音频或视频", enabled = !s.busy, onClick = import)
                                 } } }
-                                items(model.sortedSounds(s), key = { it.id }) { sound ->
+                                items(sounds, key = { it.id }) { sound ->
                                     Surface {
                                         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                             IconAction(if (s.playing == "library:${sound.id}") Icons.Stop else Icons.Play, "试听 ${sound.name}", enabled = !s.busy) { model.preview("library:${sound.id}") }

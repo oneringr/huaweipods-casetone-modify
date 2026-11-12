@@ -12,8 +12,8 @@ android {
         applicationId = "oneringr.huaweipods.modify"
         minSdk = 29
         targetSdk = 36
-        versionCode = 5
-        versionName = "1.2.2"
+        versionCode = 6
+        versionName = "1.2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
@@ -26,7 +26,12 @@ android {
     }
     buildTypes {
         debug { if (hasPersonalSigning) signingConfig = signingConfigs.getByName("personal") }
-        release { if (hasPersonalSigning) signingConfig = signingConfigs.getByName("personal"); isMinifyEnabled = false }
+        release {
+            if (hasPersonalSigning) signingConfig = signingConfigs.getByName("personal")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

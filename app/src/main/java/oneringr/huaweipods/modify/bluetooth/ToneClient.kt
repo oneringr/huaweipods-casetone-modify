@@ -30,6 +30,7 @@ data class ToneStatus(val master: Boolean, val enabled: Boolean, val volume: Int
 class ToneClient(private val device: BluetoothDevice, private val trace: (String) -> Unit = {}) : Closeable {
     @Volatile private var socket: BluetoothSocket? = null
     @Volatile private var failure: Throwable? = null
+    @Volatile private var closed = false
     private val received = LinkedBlockingQueue<ByteArray>()
     private var reader: Thread? = null
 
@@ -39,13 +40,15 @@ class ToneClient(private val device: BluetoothDevice, private val trace: (String
         // 实机在上一条串口刚关闭时会拒绝首次连接。仅为这个已观察到的情况重试一次。
         repeat(2) { attempt ->
             if (connected != null) return@repeat
+            checkOpen()
             if (attempt > 0) Thread.sleep(800)
             val candidate = device.createRfcommSocketToServiceRecord(UUID.fromString("00001101-0000-1000-8000-00805f9b34fb"))
             socket = candidate
+            if (closed || Thread.currentThread().isInterrupted) { candidate.close(); throw InterruptedException() }
             val timer = Timer("bt-connect-timeout", true)
             timer.schedule(object : TimerTask() { override fun run() { runCatching { candidate.close() } } }, 10000)
             try { candidate.connect(); connected = candidate }
-            catch (e: IOException) { lastError = e; runCatching { candidate.close() }; trace("CONNECT_ATTEMPT_FAILED ${attempt + 1}") }
+            catch (e: IOException) { checkOpen(); lastError = e; runCatching { candidate.close() }; trace("CONNECT_ATTEMPT_FAILED ${attempt + 1}") }
             finally { timer.cancel() }
         }
         val s = connected ?: throw IOException("无法连接耳机。请将双耳入盒并重新开盖，关闭其他占用连接的耳机工具后重试。", lastError)
@@ -218,8 +221,10 @@ class ToneClient(private val device: BluetoothDevice, private val trace: (String
     }
 
     override fun close() {
+        closed = true
         runCatching { socket?.close() }
         reader?.interrupt()
         socket = null
     }
+    private fun checkOpen() { if (closed || Thread.currentThread().isInterrupted) throw InterruptedException() }
 }

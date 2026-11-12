@@ -2,7 +2,6 @@ package oneringr.huaweipods.modify
 
 import android.annotation.SuppressLint
 import android.app.Application
-import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -17,12 +16,13 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import oneringr.huaweipods.modify.audio.AudioEngine
 import oneringr.huaweipods.modify.audio.AudioSource
 import oneringr.huaweipods.modify.bluetooth.ToneClient
@@ -33,8 +33,6 @@ import oneringr.huaweipods.modify.update.GithubRelease
 import oneringr.huaweipods.modify.update.GithubUpdates
 import java.io.File
 import java.io.RandomAccessFile
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -74,17 +72,32 @@ data class UiState(
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("settings", 0)
     private val library = SoundLibrary(app)
+    private val libraryMutex = Mutex()
     private val engine = AudioEngine(app)
     private val mutable = MutableStateFlow(UiState(activeKey = prefs.getString("activeKey", "")!!, theme = prefs.getString("theme", "跟随系统")!!, presetGain = prefs.getFloat("presetGain", 1f).coerceIn(0f, 2f)))
     val state = mutable.asStateFlow()
     private var taskJob: Job? = null
     private var playJob: Job? = null
-    private var playGeneration = 0
+    private val playbackMutex = Mutex()
+    @Volatile private var playGeneration = 0
+    private var lastProgressAt = 0L
     @Volatile private var audioTrack: AudioTrack? = null
     @Volatile private var client: ToneClient? = null
     private val app get() = getApplication<Application>()
     init {
-        runCatching { mutable.update { it.copy(library = library.load()) } }.onFailure { failure -> mutable.update { it.copy(error = "音效库读取失败：${failure.message}") } }
+        editLibrary("音效库读取失败") {
+            val sounds = library.load()
+            mutable.update { it.copy(library = sounds) }
+        }
+    }
+
+    private fun editLibrary(message: String, work: () -> Unit) {
+        if (mutable.value.busy) return
+        viewModelScope.launch {
+            try { libraryMutex.withLock { runInterruptible(Dispatchers.IO) { work() } } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { showError("$message：${e.message ?: "请重试"}") }
+        }
     }
 
     fun page(page: Int) { mutable.update { it.copy(page = page) } }
@@ -135,7 +148,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         mutable.update { it.copy(device = device, connected = false, tone = null) }
     }
 
-    private fun runTask(label: String, connected: Boolean = false, work: () -> Unit) {
+    private fun runTask(label: String, connected: Boolean = false, libraryWrite: Boolean = false, work: () -> Unit) {
         if (mutable.value.busy) return
         if (connected && mutable.value.device == null) { showError("请先点击上方设备卡片，选择已配对的耳机"); return }
         if (connected && Build.VERSION.SDK_INT >= 31 && ContextCompat.checkSelfPermission(app, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -146,7 +159,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         taskJob = viewModelScope.launch {
             try {
                 TaskService.start(app, connected) { cancelTask() }
-                runInterruptible(Dispatchers.IO) { work() }
+                playbackMutex.withLock { }
+                if (libraryWrite) libraryMutex.withLock { runInterruptible(Dispatchers.IO) { work() } }
+                else runInterruptible(Dispatchers.IO) { work() }
             } catch (_: CancellationException) { mutable.update { it.copy(message = "操作已取消") } }
             catch (e: Throwable) { mutable.update { it.copy(error = e.message ?: "操作失败，请重试", connected = if (connected) false else it.connected) } }
             finally { client?.close(); client = null; TaskService.stop(app); mutable.update { it.copy(busy = false) } }
@@ -154,7 +169,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelTask() { client?.close(); taskJob?.cancel() }
-    fun progress(n: Float, task: String? = null) { mutable.update { it.copy(progress = n.coerceIn(0f, 1f), task = task ?: it.task) } }
+    fun progress(n: Float, task: String? = null) {
+        val now = System.nanoTime()
+        val current = mutable.value
+        if (n > 0f && n < 1f && (task == null || task == current.task) && now - lastProgressAt < 50_000_000L) return
+        lastProgressAt = now
+        mutable.update { it.copy(progress = n.coerceIn(0f, 1f), task = task ?: it.task) }
+    }
 
     @SuppressLint("MissingPermission")
     private fun withClient(action: (ToneClient) -> Unit) {
@@ -218,36 +239,41 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun firstSix() { val s = mutable.value; selection(s.start, min(s.start + 6000, s.source?.durationMs ?: return)) }
     fun all() { selection(0, mutable.value.source?.durationMs ?: return) }
 
-    fun addToLibrary(name: String) = runTask("添加到音效库") {
+    fun addToLibrary(name: String) = runTask("添加到音效库", libraryWrite = true) {
         val s = mutable.value
         val source = s.source ?: error("请先导入音频或视频")
         val content = engine.tonePcm(source, s.start, s.end, s.gain)
-        val sound = library.add(name, content, s.library)
+        val sound = library.add(name, content, mutable.value.library)
         mutable.update { it.copy(library = it.library + sound, message = "已添加到我的音效库") }
     }
 
     fun rename(sound: Sound, name: String) {
         if (name.trim().isEmpty()) return
-        val sounds = mutable.value.library.map { if (it.id == sound.id) it.copy(name = name.trim().take(80)) else it }
-        runCatching { library.save(sounds); mutable.update { it.copy(library = sounds) } }.onFailure { showError("音效重命名失败") }
+        editLibrary("音效重命名失败") {
+            val sounds = mutable.value.library.map { if (it.id == sound.id) it.copy(name = name.trim().take(80)) else it }
+            library.save(sounds); mutable.update { it.copy(library = sounds) }
+        }
     }
     fun delete(sound: Sound) {
         if (mutable.value.busy) return
         stopPlayback()
-        runCatching {
+        editLibrary("删除失败") {
             val sounds = mutable.value.library
             library.delete(sound, sounds)
             mutable.update { it.copy(library = sounds.filterNot { s -> s.id == sound.id }) }
-        }.onFailure { showError("删除失败，请重试") }
+        }
     }
     fun move(id: String, delta: Int) {
-        val sounds = mutable.value.library.sortedBy { it.order }.toMutableList()
-        val from = sounds.indexOfFirst { it.id == id }
-        val to = (from + delta).coerceIn(0, sounds.lastIndex)
-        if (from < 0 || from == to) return
-        val item = sounds.removeAt(from); sounds.add(to, item)
-        val reordered = sounds.mapIndexed { i, s -> s.copy(order = i) }
-        runCatching { library.save(reordered); mutable.update { it.copy(library = reordered, sort = "手动排序") } }.onFailure { showError("排序保存失败") }
+        editLibrary("排序保存失败") {
+            val sounds = mutable.value.library.sortedBy { it.order }.toMutableList()
+            val from = sounds.indexOfFirst { it.id == id }
+            if (from < 0) return@editLibrary
+            val to = (from + delta).coerceIn(0, sounds.lastIndex)
+            if (from == to) return@editLibrary
+            val item = sounds.removeAt(from); sounds.add(to, item)
+            val reordered = sounds.mapIndexed { i, s -> s.copy(order = i) }
+            library.save(reordered); mutable.update { it.copy(library = reordered, sort = "手动排序") }
+        }
     }
 
     fun render(kind: String) = runTask("导出音频") {
@@ -273,27 +299,40 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun preview(key: String) {
+        if (mutable.value.busy) return
         if (mutable.value.playing == key) { stopPlayback(); return }
-        val data = runCatching { pcm(key) }.getOrElse { showError("无法读取此音效"); return }
-        playRaw(data, key, 16000, 1)
+        playRaw(key, 16000, 1) { pcm(key) }
     }
 
-    private fun playRaw(data: ByteArray, key: String, rate: Int, channels: Int) {
+    private fun playRaw(key: String, rate: Int, channels: Int, load: () -> ByteArray) {
         stopPlayback()
         val generation = playGeneration
         mutable.update { it.copy(playing = key) }
         playJob = viewModelScope.launch {
-            try { runInterruptible(Dispatchers.IO) {
+            try {
+                playbackMutex.withLock { runInterruptible(Dispatchers.IO) {
+                val data = load()
                 val track = createTrack(rate, channels)
                 audioTrack = track
-                try { track.play(); track.write(data, 0, data.size); awaitPlayback(track, data.size / (channels * 2)) }
+                try {
+                    checkPlaybackCancelled()
+                    track.play()
+                    var offset = 0
+                    while (offset < data.size) {
+                        checkPlaybackCancelled()
+                        val count = track.write(data, offset, data.size - offset)
+                        check(count > 0) { "无法播放音频（$count）" }; offset += count
+                    }
+                    awaitPlayback(track, data.size / (channels * 2))
+                }
                 finally { runCatching { track.stop() }; track.release(); if (audioTrack === track) audioTrack = null }
-            } } catch (_: CancellationException) {} catch (e: Throwable) { showError(e.message ?: "试听失败") }
+            } } } catch (_: CancellationException) {} catch (e: Throwable) { if (playGeneration == generation) showError(e.message ?: "试听失败") }
             finally { if (playGeneration == generation) mutable.update { it.copy(playing = null) } }
         }
     }
 
     fun previewEditor() {
+        if (mutable.value.busy) return
         if (mutable.value.playing == "editor") { stopPlayback(); return }
         stopPlayback()
         val generation = playGeneration
@@ -302,27 +341,35 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val from = s.cursor.takeIf { it >= s.start && it < s.end - 20 } ?: s.start
         mutable.update { it.copy(playing = "editor", cursor = from) }
         playJob = viewModelScope.launch {
-            try { runInterruptible(Dispatchers.IO) {
+            try {
+                playbackMutex.withLock { runInterruptible(Dispatchers.IO) {
                 val channels = min(source.channels, 2)
                 val track = createTrack(source.rate, channels)
                 audioTrack = track
                 val first = from * source.rate / 1000
                 val last = s.end * source.rate / 1000
                 try {
+                    checkPlaybackCancelled()
                     track.play()
                     RandomAccessFile(source.file, "r").use { file ->
                         file.seek(first * source.channels * 2)
                         val raw = ByteArray(4096 * source.channels * 2)
+                        val out = ShortArray(4096 * channels)
                         var remaining = last - first
                         while (remaining > 0) {
                             if (Thread.currentThread().isInterrupted) throw InterruptedException()
-                            val frames = min(4096, remaining.toInt())
+                            val frames = min(4096L, remaining).toInt()
                             file.readFully(raw, 0, frames * source.channels * 2)
-                            val out = ShortArray(frames * channels)
                             repeat(frames) { i -> repeat(channels) { ch ->
                                 out[i * channels + ch] = (AudioEngine.shortAt(raw, (i * source.channels + ch) * 2) * s.gain).roundToInt().coerceIn(-32768, 32767).toShort()
                             } }
-                            track.write(out, 0, out.size)
+                            var offset = 0
+                            val count = frames * channels
+                            while (offset < count) {
+                                checkPlaybackCancelled()
+                                val written = track.write(out, offset, count - offset)
+                                check(written > 0) { "无法播放音频（$written）" }; offset += written
+                            }
                             remaining -= frames
                             if (playGeneration == generation) mutable.update { it.copy(cursor = (from + track.playbackHeadPosition.toLong() * 1000 / source.rate).coerceAtMost(s.end)) }
                         }
@@ -330,7 +377,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                         if (playGeneration == generation) mutable.update { it.copy(cursor = s.end) }
                     }
                 } finally { runCatching { track.stop() }; track.release(); if (audioTrack === track) audioTrack = null }
-            } } catch (_: CancellationException) {} catch (e: Throwable) { if (mutable.value.playing == "editor") showError(e.message ?: "试听失败") }
+            } } } catch (_: CancellationException) {} catch (e: Throwable) { if (playGeneration == generation) showError(e.message ?: "试听失败") }
             finally { if (playGeneration == generation) mutable.update { it.copy(playing = null) } }
         }
     }
@@ -345,11 +392,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private fun awaitPlayback(track: AudioTrack, frames: Int) {
         while (track.playbackHeadPosition < frames) { if (Thread.currentThread().isInterrupted) throw InterruptedException(); Thread.sleep(20) }
     }
+    private fun checkPlaybackCancelled() { if (Thread.currentThread().isInterrupted) throw InterruptedException() }
     fun stopPlayback() {
         playGeneration++
         mutable.update { it.copy(playing = null) }
         playJob?.cancel(); playJob = null
-        runCatching { audioTrack?.pause(); audioTrack?.flush() }
+        runCatching { audioTrack?.pause(); audioTrack?.stop(); audioTrack?.flush() }
     }
     fun consumeExport() { mutable.update { it.copy(exported = null) } }
     override fun onCleared() { stopPlayback(); client?.close(); TaskService.stop(app); mutable.value.source?.file?.delete(); super.onCleared() }

@@ -31,8 +31,11 @@ object MbbCodec {
 
     fun frames(payload: ByteArray): List<ByteArray> {
         if (payload.size <= 1018) return listOf(frame(payload))
-        val chunks = payload.toList().chunked(1017)
-        return chunks.mapIndexed { i, bytes -> frame(bytes.toByteArray(), when(i) { 0 -> 1; chunks.lastIndex -> 3; else -> 2 }, i) }
+        val count = (payload.size + 1016) / 1017
+        return List(count) { i ->
+            val start = i * 1017
+            frame(payload.copyOfRange(start, minOf(start + 1017, payload.size)), when(i) { 0 -> 1; count - 1 -> 3; else -> 2 }, i)
+        }
     }
 
     fun tlv(data: ByteArray, start: Int = 2): Map<Int, ByteArray> {

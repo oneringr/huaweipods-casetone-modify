@@ -16,6 +16,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.flowWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import oneringr.huaweipods.modify.bluetooth.ToneClient
@@ -41,8 +42,10 @@ class MainActivity : ComponentActivity() {
         exportPath = savedInstanceState?.getString("exportPath")
         exportSoundId = savedInstanceState?.getString("exportSoundId")
         if (Build.VERSION.SDK_INT < 31 || ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) model.refreshDevices()
+        val visibleState = model.state.flowWithLifecycle(lifecycle)
+        val initialState = model.state.value
         setContent {
-            val state by model.state.collectAsState()
+            val state by visibleState.collectAsState(initial = initialState)
             AppUi(model, state,
                 import = { model.stopPlayback(); picker.launch(arrayOf("audio/*", "video/*")) },
                 requestBluetooth = {
