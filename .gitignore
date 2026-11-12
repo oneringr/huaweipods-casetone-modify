@@ -10,3 +10,10 @@ dist/
 local.properties
 *.jks
 *.keystore
+
+# Local development notes and early research
+/AGENTS.md
+/HANDOFF.md
+/research/
+/scripts/pack_tone.py
+/scripts/replace_whistle.py
