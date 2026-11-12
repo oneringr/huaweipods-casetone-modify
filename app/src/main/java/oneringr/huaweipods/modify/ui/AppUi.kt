@@ -53,6 +53,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
@@ -157,7 +158,6 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
                                         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Label("增益", Modifier.weight(1f))
-                                                SmallAction("还原", !s.busy) { model.presetGain(1f) }
                                                 Text("${(s.presetGain * 100).roundToLong()}%", color = p.accent, fontSize = 13.sp, modifier = Modifier.widthIn(min = 42.dp))
                                             }
                                             GainSlider(s.presetGain, !s.busy, "预设音效增益", model::presetGain)
@@ -288,7 +288,8 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
     val source = s.source
     if (source == null) {
         Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            RoundIcon(Icons.Edit); Spacer(Modifier.height(24.dp)); Label("从一段声音开始")
+            RoundIcon(Icons.Edit); Spacer(Modifier.height(24.dp))
+            Text("可先录屏，再导入本页\n裁剪音频并调整增益", color = LocalPalette.current.muted, fontSize = 13.sp, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp)); PrimaryButton("导入音频或视频", enabled = !s.busy, onClick = import)
         }
         return
@@ -311,7 +312,7 @@ fun AppUi(model: AppModel, s: UiState, import: () -> Unit, requestBluetooth: () 
         Surface { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row { Label("增益", Modifier.weight(1f)); Label("${(s.gain * 100).roundToLong()}%") }
             GainSlider(s.gain, !s.busy, "音频增益", model::gain)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Caption("0%"); SmallAction("还原", !s.busy) { model.gain(1f) }; Caption("200%") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Caption("0%"); Caption("200%") }
         } }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             QuietButton("保存到手机", Modifier.weight(1f), !s.busy, export)
