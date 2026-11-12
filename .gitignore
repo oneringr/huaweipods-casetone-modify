@@ -1,0 +1,12 @@
+tools/
+decompiled/
+evidence/
+__pycache__/
+.gradle/
+.kotlin/
+build/
+app/build/
+dist/
+local.properties
+*.jks
+*.keystore
