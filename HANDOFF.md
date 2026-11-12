@@ -79,6 +79,10 @@ GitHub 尚无 Release 时，真机已显示“GitHub 暂无发布版本”。
 此次测试临时媒体和解码缓存已删除。用户原有音效库索引保持一致。
 FloatingToolbar 需要增加 `NavigationBarDefaults.ItemHeight` 的底部留白。
 Miuix 0.9.4 的 Scaffold 悬浮工具栏位置只扣除系统底部边距，不会自动避开 NavigationBar。
+v1.2.0 已发布到 GitHub。手机版本检查已显示“当前已是最新版本”。
+GitHub Release 的 APK 名称使用 `casetone-1.2.0.apk`，避免中文文件名被平台移除。
+Release 资产 SHA-256 与本地签名 APK 一致。校验文件按线上英文文件名生成。
+1.2.0 Lint 为 0 错误、16 个提示，8 项单元测试通过。
 
 1.1.0 已在真机覆盖安装。用户原有音效库索引在安装前后逐字节一致。
 预设增益实测左右滑动显示 43% 和 156%。处理页显示 42% 和 160%。
